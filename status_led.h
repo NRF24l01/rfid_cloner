@@ -39,6 +39,7 @@ class StatusLED {
           } else {
             pixel.setPixelColor(0, pixel.Color(0, 0, 0));
           }
+          pixel.show();
         }
       } else if (slow_blinking){
         if (millis() - last_fade_time > timer) {
@@ -46,13 +47,16 @@ class StatusLED {
             last_brightness--;
             pixel.setBrightness(last_brightness);
             if (last_brightness<=0){
-              is_failing = false;
+              is_faling = false;
             }
           } else {
             last_brightness++;
             pixel.setBrightness(last_brightness);
+            if (last_brightness == 1) {
+              pixel.setPixelColor(0, pixel.Color(r, g, b));
+            }
             if (last_brightness>=LED_BRIGHTNESS){
-              is_failing = true;
+              is_faling = true;
             }
           }
           pixel.show();
@@ -79,7 +83,7 @@ class StatusLED {
       g = gn;
       b = bn;
       last_blink_time = millis();
-      pixel.setBrightness(LED_BRIGHT);
+      pixel.setBrightness(LED_BRIGHTNESS);
     }
 
     void set_state_fadnes(int rn, int gn, int bn, uint16_t time_interval) {
