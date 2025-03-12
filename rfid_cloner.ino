@@ -11,6 +11,17 @@ StatusLED stled;
 byte cardUID[4];
 bool cardRead = false;
 
+#define NR_KNOWN_KEYS   2
+byte knownKeys[NR_KNOWN_KEYS][MFRC522::MF_KEY_SIZE] =  {
+    {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, // Old cards
+    {0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5}  // New card
+};
+
+byte buffer[18];
+byte block;
+byte waarde[64][15];
+MFRC522::MIFARE_Key originalKey;
+
 bool readCard() {
   stled.set_state_fadnes(255, 165, 0, 20); // Оранжевое мигание
   Serial.println("[INFO] Ожидание карты...");
@@ -30,6 +41,22 @@ bool readCard() {
     Serial.print(" ");
   }
   Serial.println();
+
+  for (byte k = 0; k < NR_KNOWN_KEYS; k++) {
+    memcpy(originalKey.keyByte, knownKeys[k], MFRC522::MF_KEY_SIZE);
+    
+    if (mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &originalKey, &(mfrc522.uid)) == MFRC522::STATUS_OK) {
+      Serial.println("Authentication successful! Reading data...");
+      for (block = 0; block < 64; block++) {
+        byte size = 18;
+        if (mfrc522.MIFARE_Read(block, buffer, &size) == MFRC522::STATUS_OK) {
+          memcpy(waarde[block], buffer, 15);
+        }
+      }
+      Serial.println("Data copied successfully. Now scan the second card to paste data.");
+      break;
+    }
+  }
 
   // wait until no card
   Serial.println("[INFO] Ждём пока карту уберут ");
@@ -74,8 +101,25 @@ bool writeUID() {
       }
       return false;
   }
-
   Serial.println("[INFO] UID успешно записан!");
+
+  if (mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &originalKey, &(mfrc522.uid)) != MFRC522::STATUS_OK) {
+    Serial.println("Authentication failed on second card. Overwriting keys...");
+    for (block = 3; block < 64; block += 4) {
+      memcpy(buffer, originalKey.keyByte, MFRC522::MF_KEY_SIZE);
+      buffer[6] = 0xFF; // Access bits (default)
+      buffer[7] = 0x07;
+      buffer[8] = 0x80;
+      memcpy(&buffer[10], originalKey.keyByte, MFRC522::MF_KEY_SIZE);
+      mfrc522.MIFARE_Write(block, buffer, 16);
+    }
+  }
+    
+    for (block = 0; block < 64; block++) {
+      if (mfrc522.MIFARE_Write(block, waarde[block], 15) != MFRC522::STATUS_OK) {
+        Serial.println("Write failed on block " + String(block));
+      }
+    }
 
   // wait until no card
   Serial.println("[INFO] Ждём пока карту уберут ");
