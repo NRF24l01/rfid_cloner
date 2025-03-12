@@ -1,6 +1,8 @@
 #include <SPI.h>
 #include <MFRC522.h>
+
 #include "status_led.h"
+#include "rfid_helpers.h"
 
 #define SS_PIN 10
 #define RST_PIN 9
@@ -18,9 +20,40 @@ byte knownKeys[NR_KNOWN_KEYS][MFRC522::MF_KEY_SIZE] =  {
 };
 
 byte buffer[18];
-byte block;
-byte waarde[64][15];
-MFRC522::MIFARE_Key originalKey;
+byte cardData[15][16] = {0};
+
+MFRC522::StatusCode status;
+MFRC522::MIFARE_Key key;
+
+bool authenticate(MFRC522::MIFARE_Key *key, byte block) {
+  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, block, key, &(mfrc522.uid));
+  Serial.println(status);
+  return (status == MFRC522::STATUS_OK);
+}
+
+bool readBlock(byte block, byte *buffer) {
+  byte size = 18;
+  status = mfrc522.MIFARE_Read(block, buffer, &size);
+  Serial.println(status);
+  return (status == MFRC522::STATUS_OK);
+}
+
+bool writeBlock(byte block, byte *buffer) {
+  status = mfrc522.MIFARE_Write(block, buffer, 16);
+  Serial.println(status);
+  return (status == MFRC522::STATUS_OK);
+}
+
+void dumpCardData(byte data[][16]) {
+    Serial.println("Считанные данные:");
+    for (int sector = 0; sector < 15; sector++) {
+        Serial.print("Сектор "); Serial.print(sector); Serial.print(": ");
+        for (int i = 0; i < 16; i++) {
+            Serial.print(data[sector][i], HEX); Serial.print(" ");
+        }
+        Serial.println();
+    }
+}
 
 bool readCard() {
   stled.set_state_fadnes(255, 165, 0, 20); // Оранжевое мигание
@@ -42,25 +75,33 @@ bool readCard() {
   }
   Serial.println();
 
-  for (byte k = 0; k < NR_KNOWN_KEYS; k++) {
-    memcpy(originalKey.keyByte, knownKeys[k], MFRC522::MF_KEY_SIZE);
-    
-    if (mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &originalKey, &(mfrc522.uid)) == MFRC522::STATUS_OK) {
-      Serial.println("Authentication successful! Reading data...");
-      for (block = 0; block < 64; block++) {
-        byte size = 18;
-        if (mfrc522.MIFARE_Read(block, buffer, &size) == MFRC522::STATUS_OK) {
-          memcpy(waarde[block], buffer, 15);
+  bool success = false;
+  for (byte sector = 0; sector < 15; sector++) {
+    for (byte k = 0; k < NR_KNOWN_KEYS; k++) {
+      memcpy(key.keyByte, knownKeys[k], MFRC522::MF_KEY_SIZE);
+      if (authenticate(&key, sector * 4)) {
+        if (readBlock(sector * 4, cardData[sector])) {
+          Serial.print("[INFO] Сектор "); Serial.print(sector); Serial.println(" считан.");
+          success = true;
+          break;
         }
       }
-      Serial.println("Data copied successfully. Now scan the second card to paste data.");
-      break;
+    }
+    if (!success) {
+      Serial.println("[ERROR] Ошибка чтения");
+      stled.set_state(255, 0, 0, 500);
+      uint32_t start = millis();
+      while (millis()-start<5000){
+        stled.tick();
+      }
+      return false;
     }
   }
 
   // wait until no card
   Serial.println("[INFO] Ждём пока карту уберут ");
   mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
   stled.set_state(255, 50, 0, 400);
   while ( true ) {
       byte buffer[4];
@@ -103,23 +144,34 @@ bool writeUID() {
   }
   Serial.println("[INFO] UID успешно записан!");
 
-  if (mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &originalKey, &(mfrc522.uid)) != MFRC522::STATUS_OK) {
-    Serial.println("Authentication failed on second card. Overwriting keys...");
-    for (block = 3; block < 64; block += 4) {
-      memcpy(buffer, originalKey.keyByte, MFRC522::MF_KEY_SIZE);
-      buffer[6] = 0xFF; // Access bits (default)
-      buffer[7] = 0x07;
-      buffer[8] = 0x80;
-      memcpy(&buffer[10], originalKey.keyByte, MFRC522::MF_KEY_SIZE);
-      mfrc522.MIFARE_Write(block, buffer, 16);
-    }
-  }
-    
-    for (block = 0; block < 64; block++) {
-      if (mfrc522.MIFARE_Write(block, waarde[block], 15) != MFRC522::STATUS_OK) {
-        Serial.println("Write failed on block " + String(block));
+  bool success = false;
+  for (byte sector = 0; sector < 15; sector++) {
+      for (byte k = 0; k < NR_KNOWN_KEYS; k++) {
+          memcpy(key.keyByte, knownKeys[k], MFRC522::MF_KEY_SIZE);
+          if (authenticate(&key, sector * 4)) {
+            Serial.print("[INFO] Authentication successful for sector "); Serial.print(sector);
+            if (writeBlock(sector * 4, cardData[sector])) {
+              Serial.print("[INFO] Sector "); Serial.print(sector); Serial.println(" written successfully.");
+              success = true;
+              break;
+            } else {
+              Serial.print("[ERROR] Failed to write sector "); Serial.print(sector);
+            }
+          } else {
+            Serial.print("[ERROR] Authentication failed for sector "); Serial.print(sector);
+          }
       }
-    }
+      if (!success) {
+        Serial.println(sector);
+        Serial.println("[ERROR] Ошибка Записи");
+        stled.set_state(255, 0, 0, 500);
+        uint32_t start = millis();
+        while (millis()-start<5000){
+          stled.tick();
+        }
+        return false;
+      }
+  }
 
   // wait until no card
   Serial.println("[INFO] Ждём пока карту уберут ");
